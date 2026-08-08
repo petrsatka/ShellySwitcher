@@ -1,0 +1,17 @@
+[Unit]
+Description=Shelly presence-based power switch
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/petr/ShellySwitcher
+ExecStart=/home/petr/ShellySwitcher/ShellySwitcher
+Restart=on-failure
+RestartSec=10
+User=petr
+# arp-scan potřebuje cap_net_raw - řešeno na binárce, ne přes root:
+#   sudo setcap cap_net_raw+ep /usr/sbin/arp-scan
+
+[Install]
+WantedBy=multi-user.target
