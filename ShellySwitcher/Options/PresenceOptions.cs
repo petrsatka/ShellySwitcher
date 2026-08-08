@@ -11,8 +11,8 @@ namespace ShellySwitcher.Options
         public List<SocketConfig> Sockets { get; set; } = new();
 
         /// <summary>
-        /// Cesta k souboru s fixture daty pro FileArpScanner (ladění mimo Linux).
-        /// Na Linuxu se nepoužívá - tam běží reálný arp-scan.
+        /// Path to the file with fixture data for FileArpScanner (debugging outside Linux).
+        /// Not used on Linux - real arp-scan runs there.
         /// </summary>
         public string DevArpScanFile { get; set; } = "arp-scan-sample.txt";
     }

@@ -8,8 +8,8 @@ using System.Text.RegularExpressions;
 namespace ShellySwitcher.Services
 {
     /// <summary>
-    /// Parsuje textový výstup ve formátu arp-scan ("&lt;ip&gt;\t&lt;mac&gt;\t&lt;vendor&gt;").
-    /// Sdílené mezi ArpScanService (reálný scan) a FileArpScanner (ladění na Windows).
+    /// Parses text output in arp-scan format ("<ip>\t<mac>\t<vendor>").
+    /// Shared between ArpScanService (real scan) and FileArpScanner (debugging on Windows).
     /// </summary>
     public static partial class ArpScanOutputParser
     {

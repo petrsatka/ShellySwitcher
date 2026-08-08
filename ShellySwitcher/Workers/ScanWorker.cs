@@ -34,7 +34,7 @@ namespace ShellySwitcher.Workers
             {
                 var options = _options.CurrentValue;
 
-                // Stejný rozsah napříč víc zásuvkami scanujeme jen jednou.
+                // Same range across multiple sockets is scanned only once.
                 var ranges = options.Sockets
                     .Select(s => (Start: s.RangeStartAddress, End: s.RangeEndAddress))
                     .DistinctBy(r => (r.Start.ToString(), r.End.ToString()));

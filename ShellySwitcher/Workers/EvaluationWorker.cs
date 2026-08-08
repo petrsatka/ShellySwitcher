@@ -54,7 +54,7 @@ namespace ShellySwitcher.Workers
                 {
                     try
                     {
-                        // Vynucené vypnutí má vždy přednost před presence logikou.
+                        // Forced off always takes precedence over presence logic.
                         bool forcedOff = socket.ForcedOffRanges.Any(r => r.Contains(now));
 
                         bool presenceDetected = _tracker.AnyPresentInRange(

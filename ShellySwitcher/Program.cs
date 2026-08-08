@@ -9,8 +9,8 @@ var builder = Host.CreateApplicationBuilder(args);
 builder.Services.Configure<PresenceOptions>(builder.Configuration.GetSection("Presence"));
 
 builder.Services.AddSingleton<DeviceTracker>();
-// arp-scan je Linux-only nástroj - na Windows (vývoj) se místo něj použije
-// FileArpScanner čtoucí fixture soubor (Presence:DevArpScanFile).
+// arp-scan is a Linux-only tool - on Windows (development) FileArpScanner
+// reading a fixture file (Presence:DevArpScanFile) is used instead.
 if (OperatingSystem.IsLinux())
     builder.Services.AddSingleton<IArpScanner, ArpScanner>();
 else

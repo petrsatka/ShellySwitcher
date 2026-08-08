@@ -16,10 +16,10 @@ namespace ShellySwitcher.Services
     }
 
     /// <summary>
-    /// Volá externí `arp-scan` nástroj a parsuje jeho výstup.
-    /// Vyžaduje: sudo apt install arp-scan
-    ///           sudo setcap cap_net_raw+ep /usr/sbin/arp-scan
-    /// (setcap eliminuje potřebu spouštět službu jako root)
+    /// Calls external `arp-scan` tool and parses its output.
+    /// Requires: sudo apt install arp-scan
+    ///          sudo setcap cap_net_raw+ep /usr/sbin/arp-scan
+    /// (setcap eliminates the need to run the service as root)
     /// </summary>
     public class ArpScanner : IArpScanner
     {
@@ -52,8 +52,8 @@ namespace ShellySwitcher.Services
             string error = await process.StandardError.ReadToEndAsync(ct);
             await process.WaitForExitAsync(ct);
 
-            // arp-scan vrací nenulový exit code i za běžných okolností (viz jeho man page),
-            // takže exit code sám o sobě nepovažujeme za chybu - jen zalogujeme stderr.
+            // arp-scan returns a non-zero exit code even under normal circumstances (see its man page),
+            // so we don't consider the exit code itself as an error - we just log stderr.
             if (!string.IsNullOrWhiteSpace(error))
                 _logger.LogDebug("arp-scan stderr: {Error}", error);
 

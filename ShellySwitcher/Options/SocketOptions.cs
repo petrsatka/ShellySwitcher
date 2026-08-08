@@ -12,7 +12,7 @@ namespace ShellySwitcher.Options
         public TimeOnly End { get; set; }
 
         /// <summary>
-        /// Podporuje i rozsahy přes půlnoc (např. 22:00-06:00).
+        /// Supports ranges spanning midnight (e.g., 22:00-06:00).
         /// </summary>
         public bool Contains(TimeOnly now) =>
             Start <= End
@@ -30,8 +30,8 @@ namespace ShellySwitcher.Options
         public int AbsenceTimeoutMinutes { get; set; } = 15;
         public List<TimeRange> ForcedOffRanges { get; set; } = new();
 
-        // Konfigurace nese IP jako string (kvůli JSON bindingu), tyto property
-        // dávají zbytku kódu rovnou IPAddress bez opakovaného parsování.
+        // Configuration carries IP as string (due to JSON binding), these properties
+        // provide the rest of the code with IPAddress directly without repeated parsing.
         [JsonIgnore]
         public IPAddress RangeStartAddress => IPAddress.Parse(RangeStart);
 

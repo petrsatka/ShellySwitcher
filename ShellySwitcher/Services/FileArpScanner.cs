@@ -11,13 +11,13 @@ using System.Text;
 namespace ShellySwitcher.Services
 {
     /// <summary>
-    /// Náhrada ArpScanService pro vývoj mimo Linux (arp-scan tam není dostupný).
-    /// Čte stejný textový formát ("ip\tmac\tvendor") ze souboru nakonfigurovaného
-    /// v Presence:DevArpScanFile - stačí ho ručně přepisovat a simulovat tak
-    /// příchod/odchod zařízení bez reálné sítě.
+    /// Replacement for ArpScanService for development outside Linux (arp-scan is not available there).
+    /// Reads the same text format ("ip\tmac\tvendor") from a file configured
+    /// in Presence:DevArpScanFile - you can manually overwrite it to simulate
+    /// device arrival/departure without a real network.
     ///
-    /// Registruje se místo ArpScanService jen když OperatingSystem.IsLinux() == false,
-    /// viz Program.cs.
+    /// Registered instead of ArpScanService only when OperatingSystem.IsLinux() == false,
+    /// see Program.cs.
     /// </summary>
     public class FileArpScanner : IArpScanner
     {

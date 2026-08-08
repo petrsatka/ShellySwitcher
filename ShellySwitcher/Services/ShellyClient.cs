@@ -18,13 +18,13 @@ namespace ShellySwitcher.Services
     }
 
     /// <summary>
-    /// RPC klient pro Shelly Gen2/3 zařízení (Digest Auth, RFC 7616, SHA-256).
+    /// RPC client for Shelly Gen2/3 devices (Digest Auth, RFC 7616, SHA-256).
     ///
-    /// Strategie: trvalé přihlášení s fallbackem.
-    ///  - Pokud pro dané zařízení už máme platný nonce, pošleme rovnou autentizovaný
-    ///    request (nc se inkrementuje při každém volání).
-    ///  - Pokud přijde 401 (první request, nebo nonce vypršel), provedeme handshake
-    ///    (přečteme WWW-Authenticate) a zopakujeme request s novým nonce.
+    /// Strategy: persistent login with fallback.
+    ///  - If we already have a valid nonce for a given device, we send an authenticated
+    ///    request directly (nc is incremented on each call).
+    ///  - If we get 401 (first request, or nonce expired), we perform a handshake
+    ///    (read WWW-Authenticate) and retry the request with a new nonce.
     /// </summary>
     public partial class ShellyClient : IShellyClient
     {
@@ -59,7 +59,7 @@ namespace ShellySwitcher.Services
         {
             var state = _states.GetOrAdd(socket.Address, _ => new DigestState());
 
-            // Preemptivní pokus s existujícím nonce, pokud ho máme.
+            // Preemptive attempt with existing nonce, if we have it.
             if (state.HasChallenge)
             {
                 var request = BuildAuthenticatedRequest(method, uri, body, socket, state);
@@ -68,17 +68,17 @@ namespace ShellySwitcher.Services
                 if (response.StatusCode != HttpStatusCode.Unauthorized)
                     return response;
 
-                // nonce vypršel / stale - zahodíme a uděláme nový handshake níže.
+                // nonce expired / stale - discard and perform new handshake below.
                 response.Dispose();
             }
 
-            // Handshake: čistý request bez auth -> přečti challenge -> zopakuj s auth.
+            // Handshake: plain request without auth -> read challenge -> retry with auth.
             using (var challengeRequest = BuildPlainRequest(method, uri, body))
             {
                 var challengeResponse = await _http.SendAsync(challengeRequest, ct);
 
                 if (challengeResponse.StatusCode != HttpStatusCode.Unauthorized)
-                    return challengeResponse; // autentizace na zařízení není zapnutá
+                    return challengeResponse; // authentication on device is not enabled
 
                 ParseChallenge(challengeResponse, state);
                 challengeResponse.Dispose();
@@ -122,7 +122,7 @@ namespace ShellySwitcher.Services
         {
             var digestHeader = response.Headers.WwwAuthenticate.FirstOrDefault(h => h.Scheme == "Digest")
                 ?? throw new InvalidOperationException(
-                    "Zařízení odpovědělo 401, ale bez Digest challenge - neočekávaná odpověď.");
+                    "Device responded with 401, but without Digest challenge - unexpected response.");
 
             var parameters = ParseDigestParameters(digestHeader.Parameter ?? "");
 
@@ -158,7 +158,7 @@ namespace ShellySwitcher.Services
             return Convert.ToHexString(bytes).ToLowerInvariant();
         }
 
-        /// <summary>Digest auth stav pro jedno Shelly zařízení - drží se mezi requesty (trvalé přihlášení).</summary>
+        /// <summary>Digest auth state for a single Shelly device - maintained between requests (persistent login).</summary>
         private sealed class DigestState
         {
             public string? Realm;
