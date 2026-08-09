@@ -49,7 +49,7 @@ namespace ShellySwitcher.Services
             {
                 var content = await response.Content.ReadAsStringAsync(ct);
                 _logger.LogWarning(
-                    "Shelly {Name} ({Address}) Switch.Set selhal: {Status} {Body}",
+                    "Shelly {Name} ({Address}) Switch.Set failed: {Status} {Body}",
                     socket.Name, socket.Address, response.StatusCode, content);
             }
         }

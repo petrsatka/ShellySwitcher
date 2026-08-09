@@ -49,11 +49,11 @@ namespace ShellySwitcher.Workers
                             _tracker.MarkSeen(device.Ip);
 
                         _logger.LogInformation(
-                            "Scan {Start}-{End}: nalezeno {Count} zařízení", start, end, devices.Count);
+                            "Scan {Start}-{End}: found {Count} devices", start, end, devices.Count);
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "Scan rozsahu {Start}-{End} selhal", start, end);
+                        _logger.LogError(ex, "Scan range {Start}-{End} failed", start, end);
                     }
                 }
 

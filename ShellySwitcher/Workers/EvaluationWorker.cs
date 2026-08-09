@@ -76,7 +76,7 @@ namespace ShellySwitcher.Workers
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "Vyhodnocení zásuvky {Name} selhalo", socket.Name);
+                        _logger.LogError(ex, "Socket evaluation {Name} failed", socket.Name);
                     }
                 }
 
