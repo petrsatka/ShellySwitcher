@@ -3,9 +3,6 @@ using ShellySwitcher.Options;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.ComponentModel.DataAnnotations;
-using System.Diagnostics.Eventing.Reader;
-using System.Linq.Expressions;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
@@ -23,19 +20,32 @@ namespace ShellySwitcher.Services
     /// <summary>
     /// RPC client for Shelly Gen2/3 devices (Digest Auth, RFC 7616, SHA-256).
     ///
-    /// Strategy: persistent login with fallback.
-    ///  - If we already have a valid nonce for a given device, we send an authenticated
-    ///    request directly (nc is incremented on each call).
-    ///  - If we get 401 (first request, or nonce expired), we perform a handshake
-    ///    (read WWW-Authenticate) and retry the request with a new nonce.
+    /// Flow (up to 3 passes of the outer loop):
+    ///   1. Send a request - authenticated if we already have a nonce, otherwise plain.
+    ///   2. 200      -> done.
+    ///   3. 401      -> store the new nonce from this response, send ONE authenticated
+    ///                  request. 200 -> done. Anything else -> can't log in,
+    ///                  clear the nonce, end the algorithm (no further retries).
+    ///   4. 429      -> clear the nonce, wait 3s, go back to step 1 (new pass).
+    ///
+    /// A failure while parsing the challenge (unexpected device response) is logged
+    /// and ends the algorithm right away - it's not a state that a retry would fix.
+    ///
+    /// All HTTP response disposal goes through "using var" as a safety net (runs
+    /// automatically when the block is left, including via continue/return/exception).
+    /// On 429, though, the request/response are disposed explicitly right away, so
+    /// the TCP connection returns to the pool before the 3s wait starts - otherwise
+    /// it would be held unnecessarily for the whole wait (the second Dispose() from
+    /// "using" is a no-op, not an error).
     /// </summary>
     public partial class ShellyClient : IShellyClient
     {
+        private const int MaxAttempts = 3;//429 from authenticated request + 429 from new unauthenticated request (429 from first authenticated request does not trigger nonce buffer eviction) + 401 from new unauthenticated request
+        private static readonly TimeSpan RetryDelay = TimeSpan.FromMilliseconds(3000); //2000 by documentation, but 3000 is for sure enough to avoid 429 on the next request
+
         private readonly HttpClient _http;
         private readonly ILogger<ShellyClient> _logger;
         private readonly ConcurrentDictionary<string, DigestState> _states = new();
-        private const int MaxRetries = 3;
-        private const int RetryDelayMs = 3000;
 
         public ShellyClient(HttpClient http, ILogger<ShellyClient> logger)
         {
@@ -43,134 +53,100 @@ namespace ShellySwitcher.Services
             _logger = logger;
         }
 
-        public async Task<bool> SetSwitchAsync(SocketConfig socket, bool on, CancellationToken ct)
+        public Task<bool> SetSwitchAsync(SocketConfig socket, bool on, CancellationToken ct)
         {
             var uri = $"http://{socket.Address}/rpc/Switch.Set";
             var body = JsonSerializer.Serialize(new { id = 0, on });
-
-            using var response = await SendWithAuthAsync(socket, HttpMethod.Post, uri, body, ct);
-
-            if (!response.IsSuccessStatusCode)
-            {
-                var content = await response.Content.ReadAsStringAsync(ct);
-                _logger.LogWarning(
-                    "Shelly {Name} ({Address}) Switch.Set failed: {Status} {Body}",
-                    socket.Name, socket.Address, response.StatusCode, content);
-                return false;
-            }
-            return true;
+            return SendWithAuthAsync(socket, HttpMethod.Post, uri, body, ct);
         }
 
-        private async Task<HttpResponseMessage> SendWithAuthAsync(
+        private async Task<bool> SendWithAuthAsync(
             SocketConfig socket, HttpMethod method, string uri, string body, CancellationToken ct)
         {
             var state = _states.GetOrAdd(socket.Address, _ => new DigestState());
 
-            // Preemptive attempt with existing nonce, if we have it.
-            if (state.HasChallenge)
+            for (int attempt = 1; attempt <= MaxAttempts; attempt++)
             {
-                HttpResponseMessage response;
-                using (var request = BuildAuthenticatedRequest(method, uri, body, socket, state))
+                using var request = BuildRequest(method, uri, body, socket, state);
+                using var response = await _http.SendAsync(request, ct);
+
+                if (response.StatusCode == HttpStatusCode.TooManyRequests)
                 {
-                    response = await _http.SendAsync(request, ct);
+                    _logger.LogDebug(
+                        "Shelly {Name} ({Address}): 429 (attempt {Attempt}/{Max}), clearing nonce and waiting {Delay}",
+                        socket.Name, socket.Address, attempt, MaxAttempts, RetryDelay);
+
+                    state.Clear();
+
+                    // Release the connection before waiting - no point holding it
+                    // for RetryDelay when we're discarding response/request anyway.
+                    response.Dispose();
+                    request.Dispose();
+
+                    await Task.Delay(RetryDelay, ct);
+                    continue;
                 }
 
-                var responseStatusCode = response.StatusCode;
-                if (responseStatusCode != HttpStatusCode.Unauthorized && responseStatusCode != HttpStatusCode.TooManyRequests)
-                {
-                    return response;
-                }
-
-                if (response.StatusCode == HttpStatusCode.Unauthorized)
-                {
-                    // A 401 response normally carries a fresh Digest challenge,
-                    // so we can authenticate directly from this response without
-                    // sending another unauthenticated request.
-                    try
-                    {
-                        ParseChallenge(response, state);
-                        using var retryRequest = BuildAuthenticatedRequest(method, uri, body, socket, state);
-                        var retryResponse = await _http.SendAsync(retryRequest, ct);
-                        response.Dispose();
-                        return retryResponse;
-                    }
-                    catch (Exception ex) when (ex is InvalidOperationException || ex is KeyNotFoundException)
-                    {
-                        _logger.LogWarning("Shelly {Name} ({Address}) returned 401 with invalid WWW-Authenticate header.", socket.Name, socket.Address);
-                        _logger.LogInformation("Continuing with handshake to get a new nonce.");
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "Error");
-                        response.Dispose();
-                        state.Clear();
-                        throw;
-                    }
-                }
-
-                // nonce expired / stale - discard and perform new handshake below.
-                response.Dispose();
-                state.Clear();
-
-                if (responseStatusCode == HttpStatusCode.TooManyRequests)
-                {   // Shelly may return 429 instead of 401 when the nonce is no longer
-                    // available in the nonce store. This is inconsistent with the documented
-                    // behavior for an unknown/stale nonce.
-                    await Task.Delay(RetryDelayMs, ct); // wait before retrying
-                }
-            }
-
-            // Handshake: plain request without auth -> read challenge -> retry with auth.
-            for (int attempt = 0; attempt < MaxRetries; attempt++)
-            {
-                HttpResponseMessage challengeResponse;
-                using (var challengeRequest = BuildPlainRequest(method, uri, body))
-                {
-                    challengeResponse = await _http.SendAsync(challengeRequest, ct);
-                }
-
-                if (challengeResponse.StatusCode != HttpStatusCode.Unauthorized && challengeResponse.StatusCode != HttpStatusCode.TooManyRequests)
-                {
-                    return challengeResponse; // authentication on device is not enabled
-                }
-
-                if (challengeResponse.StatusCode == HttpStatusCode.TooManyRequests)
-                {//This is documented behavior. If there is no empty slot for the new nonce, the device returns 429. Client must wait a bit before retrying.
-                    if (attempt + 1 < MaxRetries)
-                    {
-                        challengeResponse.Dispose();
-                        await Task.Delay(RetryDelayMs, ct);
-                        continue;
-                    }
-                    else
-                    {
-                        return challengeResponse;
-                    }
+                if (response.StatusCode != HttpStatusCode.Unauthorized)
+                {   //200 or other non-401/429 response - either success or a failure that won't be fixed by retrying.
+                    return await FinishAsync(socket, response, ct);
                 }
 
                 try
-                {
-                    ParseChallenge(challengeResponse, state);
+                {   // 401 - parse the challenge and send one authenticated request.
+                    ParseChallenge(response, state);
                 }
-                finally
+                catch (Exception ex)
                 {
-                    challengeResponse.Dispose();
+                    _logger.LogError(ex,
+                        "Shelly {Name} ({Address}): failed to process Digest challenge - unexpected response",
+                        socket.Name, socket.Address);
+                    return false;
                 }
 
-                break; // challenge parsed,
+                using var authedRequest = BuildAuthenticatedRequest(method, uri, body, socket, state);
+                using var authedResponse = await _http.SendAsync(authedRequest, ct);
+
+                if (!authedResponse.IsSuccessStatusCode)
+                {   // 401 after authentication or other failure - can't log in, clear the nonce and end the algorithm.
+                    state.Clear();
+                }
+
+                return await FinishAsync(socket, authedResponse, ct);
             }
 
-            using var authedRequest = BuildAuthenticatedRequest(method, uri, body, socket, state);
-            return await _http.SendAsync(authedRequest, ct);
+            _logger.LogWarning(
+                "Shelly {Name} ({Address}): attempts exhausted ({Max}), device still returning 429",
+                socket.Name, socket.Address, MaxAttempts);
+            return false;
         }
+
+        private async Task<bool> FinishAsync(SocketConfig socket, HttpResponseMessage response, CancellationToken ct)
+        {
+            if (response.IsSuccessStatusCode)
+            {
+                return true;
+            }
+
+            var content = await response.Content.ReadAsStringAsync(ct);
+            _logger.LogWarning(
+                "Shelly {Name} ({Address}) Switch.Set failed: {Status} {Body}",
+                socket.Name, socket.Address, response.StatusCode, content);
+            return false;
+        }
+
+        private static HttpRequestMessage BuildRequest(
+            HttpMethod method, string uri, string body, SocketConfig socket, DigestState state) =>
+            state.HasChallenge
+                ? BuildAuthenticatedRequest(method, uri, body, socket, state)
+                : BuildPlainRequest(method, uri, body);
 
         private static HttpRequestMessage BuildPlainRequest(HttpMethod method, string uri, string body)
         {
-            var request = new HttpRequestMessage(method, uri)
+            return new HttpRequestMessage(method, uri)
             {
                 Content = new StringContent(body, Encoding.UTF8, "application/json"),
             };
-            return request;
         }
 
         private static HttpRequestMessage BuildAuthenticatedRequest(
@@ -198,7 +174,7 @@ namespace ShellySwitcher.Services
         {
             var digestHeader = response.Headers.WwwAuthenticate.FirstOrDefault(h => h.Scheme == "Digest")
                 ?? throw new InvalidOperationException(
-                    "Device responded with 401, but without Digest challenge - unexpected response.");
+                    "Device responded with 401, but without a Digest challenge - unexpected response.");
 
             var parameters = ParseDigestParameters(digestHeader.Parameter ?? "");
 
@@ -234,7 +210,7 @@ namespace ShellySwitcher.Services
             return Convert.ToHexString(bytes).ToLowerInvariant();
         }
 
-        /// <summary>Digest auth state for a single Shelly device - maintained between requests (persistent login).</summary>
+        /// <summary>Digest auth state for a single Shelly device - kept between requests (persistent login).</summary>
         private sealed class DigestState
         {
             public string? Realm;
@@ -257,5 +233,4 @@ namespace ShellySwitcher.Services
             }
         }
     }
-
 }
