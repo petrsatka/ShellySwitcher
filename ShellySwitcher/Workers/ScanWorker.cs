@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using ShellySwitcher.Options;
 using ShellySwitcher.Services;
+using ShellySwitcher.Utils;
 using System;
 using System.Collections.Generic;
 using System.Text;
@@ -35,26 +36,29 @@ namespace ShellySwitcher.Workers
                 var options = _options.CurrentValue;
 
                 // Same range across multiple sockets is scanned only once.
-                var ranges = options.Sockets
+                var addresses = options.Sockets
                     .Select(s => (Start: s.RangeStartAddress, End: s.RangeEndAddress))
-                    .DistinctBy(r => (r.Start.ToString(), r.End.ToString()));
+                    .DistinctBy(r => (r.Start.ToString(), r.End.ToString()))
+                    .SelectMany(r => IpRangeHelper.Enumerate(r.Start, r.End))
+                    .DistinctBy(ip => ip.ToString()).ToList();
 
-                foreach (var (start, end) in ranges)
+                try
                 {
-                    try
-                    {
-                        var devices = await _scanner.ScanAsync(options.Interface, start, end, stoppingToken);
+                    var results = await _scanner.ScanAsync(options.Interface, addresses, stoppingToken);
 
-                        foreach (var device in devices)
-                            _tracker.MarkSeen(device.Ip);
-
-                        _logger.LogInformation(
-                            "Scan {Start}-{End}: found {Count} devices", start, end, devices.Count);
-                    }
-                    catch (Exception ex)
+                    foreach (var result in results)
                     {
-                        _logger.LogError(ex, "Scan range {Start}-{End} failed", start, end);
+                        _tracker.SetStatus(result.Ip, result.Present);
+
+                        if (result.Present)
+                        {
+                            _logger.LogInformation("Device {Ip} is present", result.Ip);
+                        }
                     }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Scan failed");
                 }
 
                 await Task.Delay(TimeSpan.FromMinutes(options.ScanIntervalMinutes), stoppingToken);

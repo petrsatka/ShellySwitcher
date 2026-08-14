@@ -27,7 +27,7 @@ namespace ShellySwitcher.Options
         public string Password { get; set; } = "";
         public string RangeStart { get; set; } = "";
         public string RangeEnd { get; set; } = "";
-        public int AbsenceTimeoutMinutes { get; set; } = 15;
+        public int AbsenceTimeoutMinutes { get; set; } = 5;
         public List<TimeRange> ForcedOffRanges { get; set; } = new();
 
         // Configuration carries IP as string (due to JSON binding), these properties

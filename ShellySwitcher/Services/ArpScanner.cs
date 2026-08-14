@@ -12,8 +12,8 @@ namespace ShellySwitcher.Services
 {
     public interface IArpScanner
     {
-        Task<IReadOnlyList<DiscoveredDevice>> ScanAsync(
-            string interfaceName, IPAddress start, IPAddress end, CancellationToken ct);
+        Task<IReadOnlyList<AddressStatus>> ScanAsync(
+            string interfaceName, List<IPAddress> addresses, CancellationToken ct);
     }
 
     /// <summary>
@@ -49,22 +49,20 @@ namespace ShellySwitcher.Services
             _logger = logger;
         }
 
-        public async Task<IReadOnlyList<DiscoveredDevice>> ScanAsync(
-            string interfaceName, IPAddress start, IPAddress end, CancellationToken ct)
+        public async Task<IReadOnlyList<AddressStatus>> ScanAsync(
+            string interfaceName, List<IPAddress> addresses, CancellationToken ct)
         {
-            var addresses = IpRangeHelper.Enumerate(start, end).ToList();
-
             // Ping all addresses at once - just triggers revalidation in kernel,
             // we don't care about the response itself (see comment above).
             await Task.WhenAll(addresses.Select(ip => PingAsync(interfaceName, ip, ct)));
 
             var neighState = await ReadNeighborTableAsync(interfaceName, ct);
 
-            var results = new List<DiscoveredDevice>();
+            var results = new List<AddressStatus>();
             foreach (var ip in addresses)
             {
-                if (neighState.TryGetValue(ip.ToString(), out var state) && PresentStates.Contains(state))
-                    results.Add(new DiscoveredDevice(ip));
+                bool present = neighState.TryGetValue(ip.ToString(), out var state) && PresentStates.Contains(state);
+                results.Add(new AddressStatus(ip, present));
             }
 
             return results;

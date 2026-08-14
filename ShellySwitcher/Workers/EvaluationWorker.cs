@@ -21,7 +21,7 @@ namespace ShellySwitcher.Workers
 
     public class EvaluationWorker : BackgroundService
     {
-        private static readonly TimeSpan EvaluationInterval = TimeSpan.FromSeconds(30);
+        private static readonly TimeSpan EvaluationInterval = TimeSpan.FromSeconds(17);
 
         private readonly IOptionsMonitor<PresenceOptions> _options;
         private readonly DeviceTracker _tracker;

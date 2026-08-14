@@ -13,30 +13,51 @@ namespace ShellySwitcher.Services
     /// </summary>
     public class DeviceTracker
     {
-        private readonly ConcurrentDictionary<string, DateTime> _lastSeenUtc = new();
-
-        public void MarkSeen(IPAddress ip) => _lastSeenUtc[ip.ToString()] = DateTime.UtcNow;
-
-        public DateTime? GetLastSeenUtc(IPAddress ip) =>
-            _lastSeenUtc.TryGetValue(ip.ToString(), out var t) ? t : null;
-
-        /// <summary>
-        /// Bylo v daném IP rozsahu aspoň jedno zařízení viděné během posledních `within`?
-        /// </summary>
-        public bool AnyPresentInRange(IPAddress start, IPAddress end, TimeSpan within)
+        private sealed class DeviceStatus
         {
-            var cutoff = DateTime.UtcNow - within;
+            public bool Present;
+            public DateTime LastOnlineUtc;
+        }
 
-            foreach (var (ipText, lastSeen) in _lastSeenUtc)
+        private readonly ConcurrentDictionary<string, DeviceStatus> _status = new();
+
+        public void SetStatus(IPAddress ip, bool present)
+        {
+            var now = DateTime.UtcNow;
+            _status.AddOrUpdate(ip.ToString(),
+                _ => new DeviceStatus { Present = present, LastOnlineUtc = present ? now : DateTime.MinValue },
+                (_, existing) =>
+                {
+                    existing.Present = present;
+                    if (present)
+                        existing.LastOnlineUtc = now;
+                    return existing;
+                });
+        }
+
+        public bool AnyPresentInRange(IPAddress start, IPAddress end, TimeSpan absenceTimeout)
+        {
+            var cutoff = DateTime.UtcNow - absenceTimeout;
+
+            foreach (var (ipText, status) in _status)
             {
-                if (lastSeen < cutoff)
-                    continue;
-
                 if (!IPAddress.TryParse(ipText, out var ip))
                     continue;
 
-                if (IpRangeHelper.IsInRange(ip, start, end))
+                if (!IpRangeHelper.IsInRange(ip, start, end))
+                    continue;
+
+                // Last scan confirms it as present - no time comparison needed.
+                if (status.Present)
+                {
                     return true;
+                }
+
+                //Confirmed not found now, but last online was within tolerance.
+                if (status.LastOnlineUtc >= cutoff)
+                {
+                    return true;
+                }
             }
 
             return false;

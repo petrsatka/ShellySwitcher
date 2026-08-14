@@ -5,5 +5,5 @@ using System.Text;
 
 namespace ShellySwitcher.Models
 {
-    public record DiscoveredDevice(IPAddress Ip);
+    public record AddressStatus(IPAddress Ip, bool Present);
 }
