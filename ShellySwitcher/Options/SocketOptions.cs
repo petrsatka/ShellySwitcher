@@ -19,6 +19,14 @@ namespace ShellySwitcher.Options
                 ? now >= Start && now < End
                 : now >= Start || now < End;
     }
+
+    public class SafetyCheckOptions
+    {
+        public bool Enabled { get; set; } = false;
+        public double ThresholdWatts { get; set; } = 20;
+        public int DelayMs { get; set; } = 1500;
+    }
+
     public class SocketConfig
     {
         public string Name { get; set; } = "";
@@ -29,6 +37,8 @@ namespace ShellySwitcher.Options
         public string RangeEnd { get; set; } = "";
         public int AbsenceTimeoutMinutes { get; set; } = 5;
         public List<TimeRange> ForcedOffRanges { get; set; } = new();
+
+        public SafetyCheckOptions SafetyCheck { get; set; } = new();
 
         // Configuration carries IP as string (due to JSON binding), these properties
         // provide the rest of the code with IPAddress directly without repeated parsing.

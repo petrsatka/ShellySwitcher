@@ -27,6 +27,7 @@ namespace ShellySwitcher.Workers
         private readonly DeviceTracker _tracker;
         private readonly IShellyClient _shelly;
         private readonly SocketStateStore _stateStore;
+        private readonly ISafetyCheckService _safetyCheck;
         private readonly ILogger<EvaluationWorker> _logger;
 
         public EvaluationWorker(
@@ -34,12 +35,14 @@ namespace ShellySwitcher.Workers
             DeviceTracker tracker,
             IShellyClient shelly,
             SocketStateStore stateStore,
+            ISafetyCheckService safetyCheck,
             ILogger<EvaluationWorker> logger)
         {
             _options = options;
             _tracker = tracker;
             _shelly = shelly;
             _stateStore = stateStore;
+            _safetyCheck = safetyCheck;
             _logger = logger;
         }
 
@@ -65,8 +68,11 @@ namespace ShellySwitcher.Workers
                     bool physicalOn = desired == DesiredState.On;
                     await _shelly.SetSwitchAsync(socket, physicalOn, ct);
                     _stateStore.Set(socket.Name, desired);
-
                     _logger.LogInformation("{Name}: {Previous} -> {Desired}", socket.Name, previous, desired);
+                    if (physicalOn)
+                    {
+                        await _safetyCheck.RunAsync(socket, ct);
+                    }
                 }
             }
             catch (Exception ex)

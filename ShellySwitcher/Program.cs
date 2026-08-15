@@ -19,6 +19,7 @@ builder.Services.AddSingleton<DeviceTracker>();
 builder.Services.AddSingleton<IArpScanner, ArpScanner>();
 builder.Services.AddHttpClient<IShellyClient, ShellyClient>();
 builder.Services.AddSingleton<SocketStateStore>();
+builder.Services.AddSingleton<ISafetyCheckService, SafetyCheckService>();
 builder.Services.AddHostedService<ScanWorker>();
 builder.Services.AddHostedService<EvaluationWorker>();
 

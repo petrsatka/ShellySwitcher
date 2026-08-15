@@ -15,6 +15,7 @@ namespace ShellySwitcher.Services
     public interface IShellyClient
     {
         Task<bool> SetSwitchAsync(SocketConfig socket, bool on, CancellationToken ct);
+        Task<double?> GetPowerAsync(SocketConfig socket, CancellationToken ct);
     }
 
     /// <summary>
@@ -58,11 +59,39 @@ namespace ShellySwitcher.Services
         {
             var uri = $"http://{socket.Address}/rpc/Switch.Set";
             var body = JsonSerializer.Serialize(new { id = 0, on });
-            return SendWithAuthAsync(socket, HttpMethod.Post, uri, body, ct);
+            return SendWithAuthAsync(socket, HttpMethod.Post, uri, body, ct)
+                   .ContinueWith(t => t.Result.Success, ct);
         }
 
-        private async Task<bool> SendWithAuthAsync(
-            SocketConfig socket, HttpMethod method, string uri, string body, CancellationToken ct)
+        public async Task<double?> GetPowerAsync(SocketConfig socket, CancellationToken ct)
+        {
+            var uri = $"http://{socket.Address}/rpc/Switch.GetStatus?id=0";
+            var (success, content) = await SendWithAuthAsync(socket, HttpMethod.Get, uri, null, ct);
+
+            if (!success || content is null)
+                return null;
+
+            try
+            {
+                using var doc = JsonDocument.Parse(content);
+                if (doc.RootElement.TryGetProperty("apower", out var apowerProp))
+                {
+                    _logger.LogInformation("Current power for Shelly {Name} ({Address}): {Power} W", socket.Name, socket.Address, apowerProp.GetDouble());
+                    return apowerProp.GetDouble();
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "Shelly {Name} ({Address}): failed to parse Switch.GetStatus response",
+                    socket.Name, socket.Address);
+            }
+
+            return null;
+        }
+
+        private async Task<(bool Success, string? Body)> SendWithAuthAsync(
+            SocketConfig socket, HttpMethod method, string uri, string? body, CancellationToken ct)
         {
             var gate = _locks.GetOrAdd(socket.Address, _ => new SemaphoreSlim(1, 1));
             await gate.WaitAsync(ct);
@@ -107,7 +136,7 @@ namespace ShellySwitcher.Services
                         _logger.LogError(ex,
                             "Shelly {Name} ({Address}): failed to process Digest challenge - unexpected response",
                             socket.Name, socket.Address);
-                        return false;
+                        return (false, null);
                     }
 
                     using var authedRequest = BuildAuthenticatedRequest(method, uri, body, socket, state);
@@ -124,7 +153,7 @@ namespace ShellySwitcher.Services
                 _logger.LogWarning(
                     "Shelly {Name} ({Address}): attempts exhausted ({Max}), device still returning 429",
                     socket.Name, socket.Address, MaxAttempts);
-                return false;
+                return (false, null);
             }
             finally
             {
@@ -132,41 +161,40 @@ namespace ShellySwitcher.Services
             }
         }
 
-        private async Task<bool> FinishAsync(SocketConfig socket, HttpResponseMessage response, CancellationToken ct)
+        private async Task<(bool, string?)> FinishAsync(SocketConfig socket, HttpResponseMessage response, CancellationToken ct)
         {
-            if (response.IsSuccessStatusCode)
-            {
-                return true;
-            }
-
             var content = await response.Content.ReadAsStringAsync(ct);
+
+            if (response.IsSuccessStatusCode)
+                return (true, content);
+
             _logger.LogWarning(
                 "Shelly {Name} ({Address}) Switch.Set failed: {Status} {Body}",
                 socket.Name, socket.Address, response.StatusCode, content);
-            return false;
+
+            return (false, null);
         }
 
         private static HttpRequestMessage BuildRequest(
-            HttpMethod method, string uri, string body, SocketConfig socket, DigestState state) =>
+            HttpMethod method, string uri, string? body, SocketConfig socket, DigestState state) =>
             state.HasChallenge
                 ? BuildAuthenticatedRequest(method, uri, body, socket, state)
                 : BuildPlainRequest(method, uri, body);
 
-        private static HttpRequestMessage BuildPlainRequest(HttpMethod method, string uri, string body)
+        private static HttpRequestMessage BuildPlainRequest(HttpMethod method, string uri, string? body)
         {
-            return new HttpRequestMessage(method, uri)
-            {
-                Content = new StringContent(body, Encoding.UTF8, "application/json"),
-            };
+            var request = new HttpRequestMessage(method, uri);
+            if (body is not null)
+                request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+            return request;
         }
 
         private static HttpRequestMessage BuildAuthenticatedRequest(
-            HttpMethod method, string uri, string body, SocketConfig socket, DigestState state)
+            HttpMethod method, string uri, string? body, SocketConfig socket, DigestState state)
         {
-            var request = new HttpRequestMessage(method, uri)
-            {
-                Content = new StringContent(body, Encoding.UTF8, "application/json"),
-            };
+            var request = new HttpRequestMessage(method, uri);
+            if (body is not null)
+                request.Content = new StringContent(body, Encoding.UTF8, "application/json");
 
             var path = new Uri(uri).PathAndQuery;
             var nc = state.NextNc();
