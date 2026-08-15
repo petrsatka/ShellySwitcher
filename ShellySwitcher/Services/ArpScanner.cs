@@ -54,6 +54,7 @@ namespace ShellySwitcher.Services
         {
             // Ping all addresses at once - just triggers revalidation in kernel,
             // we don't care about the response itself (see comment above).
+            _logger.LogInformation("Pinging {Count} addresses on interface {InterfaceName}", addresses.Count, interfaceName);
             await Task.WhenAll(addresses.Select(ip => PingAsync(interfaceName, ip, ct)));
 
             var neighState = await ReadNeighborTableAsync(interfaceName, ct);
