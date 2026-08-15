@@ -45,6 +45,7 @@ namespace ShellySwitcher.Services
 
         private readonly HttpClient _http;
         private readonly ILogger<ShellyClient> _logger;
+        private readonly ConcurrentDictionary<string, SemaphoreSlim> _locks = new();
         private readonly ConcurrentDictionary<string, DigestState> _states = new();
 
         public ShellyClient(HttpClient http, ILogger<ShellyClient> logger)
@@ -63,62 +64,72 @@ namespace ShellySwitcher.Services
         private async Task<bool> SendWithAuthAsync(
             SocketConfig socket, HttpMethod method, string uri, string body, CancellationToken ct)
         {
-            var state = _states.GetOrAdd(socket.Address, _ => new DigestState());
+            var gate = _locks.GetOrAdd(socket.Address, _ => new SemaphoreSlim(1, 1));
+            await gate.WaitAsync(ct);
 
-            for (int attempt = 1; attempt <= MaxAttempts; attempt++)
+            try
             {
-                using var request = BuildRequest(method, uri, body, socket, state);
-                using var response = await _http.SendAsync(request, ct);
+                var state = _states.GetOrAdd(socket.Address, _ => new DigestState());
 
-                if (response.StatusCode == HttpStatusCode.TooManyRequests)
+                for (int attempt = 1; attempt <= MaxAttempts; attempt++)
                 {
-                    _logger.LogDebug(
-                        "Shelly {Name} ({Address}): 429 (attempt {Attempt}/{Max}), clearing nonce and waiting {Delay}",
-                        socket.Name, socket.Address, attempt, MaxAttempts, RetryDelay);
+                    using var request = BuildRequest(method, uri, body, socket, state);
+                    using var response = await _http.SendAsync(request, ct);
 
-                    state.Clear();
+                    if (response.StatusCode == HttpStatusCode.TooManyRequests)
+                    {
+                        _logger.LogDebug(
+                            "Shelly {Name} ({Address}): 429 (attempt {Attempt}/{Max}), clearing nonce and waiting {Delay}",
+                            socket.Name, socket.Address, attempt, MaxAttempts, RetryDelay);
 
-                    // Release the connection before waiting - no point holding it
-                    // for RetryDelay when we're discarding response/request anyway.
-                    response.Dispose();
-                    request.Dispose();
+                        state.Clear();
 
-                    await Task.Delay(RetryDelay, ct);
-                    continue;
+                        // Release the connection before waiting - no point holding it
+                        // for RetryDelay when we're discarding response/request anyway.
+                        response.Dispose();
+                        request.Dispose();
+
+                        await Task.Delay(RetryDelay, ct);
+                        continue;
+                    }
+
+                    if (response.StatusCode != HttpStatusCode.Unauthorized)
+                    {   //200 or other non-401/429 response - either success or a failure that won't be fixed by retrying.
+                        return await FinishAsync(socket, response, ct);
+                    }
+
+                    try
+                    {   // 401 - parse the challenge and send one authenticated request.
+                        ParseChallenge(response, state);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex,
+                            "Shelly {Name} ({Address}): failed to process Digest challenge - unexpected response",
+                            socket.Name, socket.Address);
+                        return false;
+                    }
+
+                    using var authedRequest = BuildAuthenticatedRequest(method, uri, body, socket, state);
+                    using var authedResponse = await _http.SendAsync(authedRequest, ct);
+
+                    if (!authedResponse.IsSuccessStatusCode)
+                    {   // 401 after authentication or other failure - can't log in, clear the nonce and end the algorithm.
+                        state.Clear();
+                    }
+
+                    return await FinishAsync(socket, authedResponse, ct);
                 }
 
-                if (response.StatusCode != HttpStatusCode.Unauthorized)
-                {   //200 or other non-401/429 response - either success or a failure that won't be fixed by retrying.
-                    return await FinishAsync(socket, response, ct);
-                }
-
-                try
-                {   // 401 - parse the challenge and send one authenticated request.
-                    ParseChallenge(response, state);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex,
-                        "Shelly {Name} ({Address}): failed to process Digest challenge - unexpected response",
-                        socket.Name, socket.Address);
-                    return false;
-                }
-
-                using var authedRequest = BuildAuthenticatedRequest(method, uri, body, socket, state);
-                using var authedResponse = await _http.SendAsync(authedRequest, ct);
-
-                if (!authedResponse.IsSuccessStatusCode)
-                {   // 401 after authentication or other failure - can't log in, clear the nonce and end the algorithm.
-                    state.Clear();
-                }
-
-                return await FinishAsync(socket, authedResponse, ct);
+                _logger.LogWarning(
+                    "Shelly {Name} ({Address}): attempts exhausted ({Max}), device still returning 429",
+                    socket.Name, socket.Address, MaxAttempts);
+                return false;
             }
-
-            _logger.LogWarning(
-                "Shelly {Name} ({Address}): attempts exhausted ({Max}), device still returning 429",
-                socket.Name, socket.Address, MaxAttempts);
-            return false;
+            finally
+            {
+                gate.Release();
+            }
         }
 
         private async Task<bool> FinishAsync(SocketConfig socket, HttpResponseMessage response, CancellationToken ct)

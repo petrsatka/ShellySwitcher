@@ -43,6 +43,38 @@ namespace ShellySwitcher.Workers
             _logger = logger;
         }
 
+        private async Task EvaluateSocketAsync(SocketConfig socket, TimeOnly now, CancellationToken ct)
+        {
+            using var scope = _logger.BeginScope("{Socket}", socket.Name);
+
+            try
+            {
+                // Forced off always takes precedence over presence logic.
+                bool forcedOff = socket.ForcedOffRanges.Any(r => r.Contains(now));
+
+                bool presenceDetected = _tracker.AnyPresentInRange(
+                    socket.RangeStartAddress,
+                    socket.RangeEndAddress,
+                    TimeSpan.FromMinutes(socket.AbsenceTimeoutMinutes));
+
+                var desired = forcedOff ? DesiredState.OffBySchedule : (presenceDetected ? DesiredState.On : DesiredState.Off);
+                var previous = _stateStore.Get(socket.Name);
+
+                if (previous != desired)
+                {
+                    bool physicalOn = desired == DesiredState.On;
+                    await _shelly.SetSwitchAsync(socket, physicalOn, ct);
+                    _stateStore.Set(socket.Name, desired);
+
+                    _logger.LogInformation("{Name}: {Previous} -> {Desired}", socket.Name, previous, desired);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Socket evaluation {Name} failed", socket.Name);
+            }
+        }
+
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             while (!stoppingToken.IsCancellationRequested)
@@ -50,35 +82,7 @@ namespace ShellySwitcher.Workers
                 var options = _options.CurrentValue;
                 var now = TimeOnly.FromDateTime(DateTime.Now);
 
-                foreach (var socket in options.Sockets)
-                {
-                    try
-                    {
-                        // Forced off always takes precedence over presence logic.
-                        bool forcedOff = socket.ForcedOffRanges.Any(r => r.Contains(now));
-
-                        bool presenceDetected = _tracker.AnyPresentInRange(
-                            socket.RangeStartAddress,
-                            socket.RangeEndAddress,
-                            TimeSpan.FromMinutes(socket.AbsenceTimeoutMinutes));
-
-                        var desired = forcedOff ? DesiredState.OffBySchedule : (presenceDetected ? DesiredState.On : DesiredState.Off);
-                        var previous = _stateStore.Get(socket.Name);
-
-                        if (previous != desired)
-                        {
-                            bool physicalOn = desired == DesiredState.On;
-                            await _shelly.SetSwitchAsync(socket, physicalOn, stoppingToken);
-                            _stateStore.Set(socket.Name, desired);
-
-                            _logger.LogInformation("{Name}: {Previous} -> {Desired}", socket.Name, previous, desired);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "Socket evaluation {Name} failed", socket.Name);
-                    }
-                }
+                await Task.WhenAll(options.Sockets.Select(socket => EvaluateSocketAsync(socket, now, stoppingToken)));
 
                 await Task.Delay(EvaluationInterval, stoppingToken);
             }
